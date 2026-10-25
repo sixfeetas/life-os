@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Life OS</title>
+<meta name="theme-color" content="#1e1e2e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="shared/theme.css?v=12">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <div class="brand">
+      <span class="mark">L</span>
+      <span>Life OS</span>
+      <span class="sub">记录 · 计划 · 自省</span>
+      <span class="build" id="buildTag" title="当前版本 · 点一下强制刷新缓存">v12</span>
+    </div>
+
+    <nav class="nav" id="nav"></nav>
+
+    <div class="live-pill" id="livePill"></div>
+
+    <div class="top-actions">
+      <button class="icon-btn" id="importBtn" title="从备份恢复 (JSON)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>
+        </svg>
+      </button>
+      <button class="icon-btn" id="backupBtn" title="导出全部备份 (JSON)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>
+        </svg>
+      </button>
+    </div>
+    <input type="file" id="importFile" accept=".json,application/json" style="display:none">
+  </div>
+</header>
+
+<div class="storage-warn" id="storageWarn" style="display:none"></div>
+
+<main class="view" id="view"></main>
+
+<div class="overlay" id="overlay" aria-hidden="true">
+  <div class="sheet" id="sheetBox" role="dialog" aria-modal="true"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="shared/util.js?v=12"></script>
+<script src="shared/data.js?v=12"></script>
+<script src="shared/store.js?v=12"></script>
+<script src="tab-log.js?v=12"></script>
+<script src="tab-plan.js?v=12"></script>
+<script src="tab-insight.js?v=12"></script>
+<script src="app.js?v=12"></script>
+</body>
+</html>
