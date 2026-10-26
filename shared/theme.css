@@ -147,10 +147,23 @@ button{cursor:pointer;border:none;background:none}
 
 .icon-btn{
   width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
-  color:var(--dim);border:1px solid transparent;transition:var(--t);
+  position:relative;color:var(--dim);border:1px solid transparent;transition:var(--t);
 }
 .icon-btn:hover{background:var(--ctp-surface0);color:var(--text);border-color:var(--line)}
 .icon-btn svg{width:17px;height:17px}
+.cloud-btn .cloud-dot{
+  position:absolute;right:5px;top:5px;width:7px;height:7px;border-radius:50%;
+  background:var(--ctp-surface2);border:1px solid var(--ctp-crust);
+  box-shadow:0 0 0 1px rgba(17,17,27,.45);transition:var(--t);
+}
+.cloud-btn.on{color:var(--ctp-green)}
+.cloud-btn.on .cloud-dot{background:var(--ctp-green);box-shadow:0 0 7px rgba(166,227,161,.55)}
+.cloud-btn.syncing{color:var(--ctp-blue)}
+.cloud-btn.syncing .cloud-dot{background:var(--ctp-blue);animation:pulse 1.2s infinite}
+.cloud-btn.pending{color:var(--ctp-yellow)}
+.cloud-btn.pending .cloud-dot{background:var(--ctp-yellow)}
+.cloud-btn.error{color:var(--ctp-red)}
+.cloud-btn.error .cloud-dot{background:var(--ctp-red)}
 
 /* ================= 导航 ================= */
 .nav{display:flex;gap:3px;margin-left:auto}
@@ -410,7 +423,8 @@ button{cursor:pointer;border:none;background:none}
   text-transform:uppercase;color:var(--dim);margin-bottom:7px;
 }
 .field > label .opt{color:var(--faint);text-transform:none;letter-spacing:0;font-weight:600;opacity:.85}
-.field input[type=text],.field input[type=datetime-local],.field textarea,.field select{
+.field input[type=text],.field input[type=email],.field input[type=password],
+.field input[type=datetime-local],.field textarea,.field select{
   width:100%;background:var(--ctp-surface0);border:1px solid var(--line);
   border-radius:10px;padding:10px 12px;color:var(--text);
   outline:none;transition:var(--t);font-size:14px;
@@ -420,6 +434,50 @@ button{cursor:pointer;border:none;background:none}
 }
 .field textarea{resize:vertical;min-height:62px;line-height:1.55}
 .field input::placeholder,.field textarea::placeholder{color:var(--faint)}
+
+/* 自动同步 */
+.cloud-intro{
+  border:1px solid rgba(137,180,250,.25);background:rgba(137,180,250,.07);
+  border-radius:11px;padding:11px 13px;font-size:12.5px;line-height:1.65;color:var(--sub);
+  margin-bottom:17px;
+}
+.cloud-intro b{color:var(--ctp-blue)}
+.cloud-error{
+  display:none;border:1px solid rgba(243,139,168,.36);background:rgba(243,139,168,.08);
+  color:var(--ctp-red);border-radius:9px;padding:9px 11px;font-size:12.5px;
+  line-height:1.55;margin-bottom:14px;
+}
+.cloud-error.show{display:block}
+.cloud-state{
+  display:flex;align-items:center;gap:10px;padding:12px 13px;
+  background:var(--ctp-surface0);border:1px solid var(--line);border-radius:11px;
+  margin-bottom:14px;
+}
+.cloud-state .dot{
+  width:9px;height:9px;border-radius:50%;background:var(--ctp-green);
+  box-shadow:0 0 8px rgba(166,227,161,.5);flex-shrink:0;
+}
+.cloud-state.syncing .dot,.cloud-state.pending .dot{background:var(--ctp-blue)}
+.cloud-state.error .dot,.cloud-state.offline .dot{background:var(--ctp-red)}
+.cloud-state .who{font-size:13.5px;font-weight:800;line-height:1.35;word-break:break-all}
+.cloud-state .what{font-size:11.5px;color:var(--dim);margin-top:2px}
+.cloud-kv{
+  display:grid;grid-template-columns:auto 1fr;gap:7px 14px;
+  font-size:12.5px;color:var(--dim);margin:14px 0;
+}
+.cloud-kv b{color:var(--sub);font-weight:700;text-align:right}
+.cloud-help{
+  border-top:1px solid var(--line);margin-top:16px;padding-top:14px;
+  font-size:12px;color:var(--dim);line-height:1.65;
+}
+.cloud-help a{color:var(--ctp-blue);text-decoration:none}
+.cloud-help a:hover{text-decoration:underline}
+.cloud-code{
+  width:100%;min-height:180px;background:var(--ctp-crust);border:1px solid var(--line);
+  border-radius:10px;padding:11px;color:var(--ctp-subtext1);font-family:Consolas,monospace;
+  font-size:11px;line-height:1.55;resize:vertical;white-space:pre;overflow:auto;
+}
+.cloud-sep{height:1px;background:var(--line);margin:16px 0}
 
 /* 情绪选择 */
 .mood-row{display:flex;gap:8px}

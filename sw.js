@@ -3,7 +3,7 @@
    —— 本地工具必须保证改完代码刷新就见效，离线时仍可用。
    每次改样式/脚本，把 CACHE 版本号 +1。
 */
-const CACHE = 'lifeos-v13';
+const CACHE = 'lifeos-v14';
 const ASSETS = [
   './',
   './index.html',
@@ -16,6 +16,7 @@ const ASSETS = [
   './shared/util.js',
   './shared/data.js',
   './shared/store.js',
+  './shared/cloud.js',
   './app.js',
   './tab-log.js',
   './tab-plan.js',

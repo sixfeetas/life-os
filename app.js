@@ -80,6 +80,292 @@
     };
   }
 
+  /* ---------------- 自动同步 ---------------- */
+  function cloudPhaseText(s) {
+    if (!s.signedIn) return '未登录';
+    if (s.phase === 'syncing') return '正在同步';
+    if (s.phase === 'pending') return '有新改动，等待上传';
+    if (s.phase === 'offline') return '离线，联网后自动上传';
+    if (s.phase === 'error') return s.error || '同步出错';
+    if (s.phase === 'synced') return '已自动同步';
+    return '等待同步';
+  }
+
+  function cloudTime(ts) {
+    if (!ts) return '还没有同步';
+    try {
+      return new Date(ts).toLocaleString('zh-CN', { hour12: false });
+    } catch (e) {
+      return '刚刚';
+    }
+  }
+
+  function renderCloudButton(s) {
+    s = s || (w.Cloud && w.Cloud.getStatus()) || {};
+    const btn = document.getElementById('cloudBtn');
+    if (!btn) return;
+    btn.classList.remove('on', 'syncing', 'pending', 'error');
+    if (s.signedIn) {
+      if (s.phase === 'syncing') btn.classList.add('syncing');
+      else if (s.phase === 'pending') btn.classList.add('pending');
+      else if (s.phase === 'error' || s.phase === 'offline') btn.classList.add('error');
+      else btn.classList.add('on');
+    }
+    btn.title = s.signedIn
+      ? '自动同步 · ' + cloudPhaseText(s)
+      : '未登录 · 设置电脑手机自动同步';
+    btn.setAttribute('aria-label', btn.title);
+  }
+
+  function cloudError(container, message) {
+    const el = container && container.querySelector('#cloudError');
+    if (!el) {
+      toast(message, 'warn');
+      return;
+    }
+    el.textContent = message;
+    el.classList.add('show');
+  }
+
+  function setCloudButtons(container, disabled) {
+    if (!container) return;
+    container.querySelectorAll('button').forEach(function (button) {
+      button.disabled = !!disabled;
+    });
+  }
+
+  function openCloudConfirmSheet(email) {
+    sheet(
+      '<div class="sheet-head"><div><h3>去邮箱确认一下</h3>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:3px">' + U.esc(email) + '</div></div></div>' +
+      '<div class="sheet-body">' +
+      '<div class="cloud-intro"><b>账号已创建。</b><br>' +
+      '打开邮箱里的确认链接，再回到这里点「登录并同步」。' +
+      '如果没有收到，先看看垃圾邮件。</div>' +
+      '</div>' +
+      '<div class="sheet-foot">' +
+      '<button class="btn btn-primary" id="cloudConfirmOk">知道了</button>' +
+      '</div>',
+      {
+        onMount: function (box) {
+          box.querySelector('#cloudConfirmOk').onclick = function () {
+            App.closeSheet();
+            openCloudSheet();
+          };
+        }
+      }
+    );
+  }
+
+  function openCloudSetupSheet() {
+    const sql = w.Cloud ? w.Cloud.setupSql : '';
+    const editor = 'https://supabase.com/dashboard/project/qgjmouupwzyfvxoyiyxm/sql/new';
+    sheet(
+      '<div class="sheet-head"><div><h3>还差最后一步</h3>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:3px">数据库建表，只需做一次</div></div></div>' +
+      '<div class="sheet-body">' +
+      '<div class="cloud-intro"><b>复制下面的内容</b>，打开 Supabase SQL 编辑器，' +
+      '粘贴进去后点右下角 <b>Run</b>。成功后回来点「立即同步」。</div>' +
+      '<textarea class="cloud-code" id="cloudSql" readonly>' + U.esc(sql) + '</textarea>' +
+      '<div class="cloud-help">SQL 编辑器：<a href="' + editor + '" target="_blank" rel="noopener">' +
+      'supabase.com/dashboard → SQL Editor</a></div>' +
+      '</div>' +
+      '<div class="sheet-foot">' +
+      '<button class="btn btn-ghost" id="cloudSqlCopy">复制 SQL</button>' +
+      '<button class="btn btn-primary" id="cloudSetupSync">建好了，同步</button>' +
+      '</div>',
+      {
+        onMount: function (box) {
+          const area = box.querySelector('#cloudSql');
+          box.querySelector('#cloudSqlCopy').onclick = function () {
+            area.focus();
+            area.select();
+            let copied = false;
+            try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+            if (!copied && navigator.clipboard) {
+              navigator.clipboard.writeText(sql).then(function () {
+                toast('SQL 已复制', 'ok');
+              }).catch(function () {
+                toast('请长按上面的文字手动复制', 'warn');
+              });
+              return;
+            }
+            toast(copied ? 'SQL 已复制' : '请长按上面的文字手动复制', copied ? 'ok' : 'warn');
+          };
+          box.querySelector('#cloudSetupSync').onclick = function () {
+            const button = this;
+            button.disabled = true;
+            button.textContent = '同步中...';
+            w.Cloud.syncNow().then(function () {
+              closeSheet();
+              renderCloudButton();
+              toast('同步开启，数据已上传', 'ok');
+            }).catch(function (err) {
+              button.disabled = false;
+              button.textContent = '建好了，同步';
+              toast(err.message || '还没连上数据库', 'warn');
+            });
+          };
+        }
+      }
+    );
+  }
+
+  function openCloudAccountSheet() {
+    const s = w.Cloud.getStatus();
+    const stateClass = s.phase === 'syncing' || s.phase === 'pending'
+      ? 'syncing'
+      : s.phase === 'error' || s.phase === 'offline'
+        ? 'error'
+        : '';
+    sheet(
+      '<div class="sheet-head"><div><h3>自动同步</h3>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:3px">电脑和手机共用这份数据</div></div></div>' +
+      '<div class="sheet-body">' +
+      '<div class="cloud-state ' + stateClass + '">' +
+      '<span class="dot"></span><div><div class="who">' + U.esc(s.email || '已登录') + '</div>' +
+      '<div class="what">' + U.esc(cloudPhaseText(s)) + '</div></div></div>' +
+      '<div class="cloud-kv"><b>上次同步</b><span>' + U.esc(cloudTime(s.lastSyncedAt)) + '</span>' +
+      '<b>数据位置</b><span>这台设备 + Supabase 云端</span></div>' +
+      '<div class="cloud-error' + (s.error && !s.setupRequired ? ' show' : '') + '" id="cloudError">' +
+      U.esc(s.error || '') + '</div>' +
+      (s.setupRequired
+        ? '<div class="cloud-intro"><b>同步数据库还没建好。</b><br>点下面的按钮，一次性完成建表。</div>'
+        : '<div class="cloud-help">修改后会自动上传；手机登录同一个邮箱即可看到。' +
+          '断网时仍会先保存到本机，不会丢记录。</div>') +
+      '</div>' +
+      '<div class="sheet-foot">' +
+      (s.setupRequired
+        ? '<button class="btn btn-primary" id="cloudSetup">查看建表步骤</button>'
+        : '<button class="btn btn-ghost" id="cloudLogout">退出账号</button>' +
+          '<button class="btn btn-primary" id="cloudSyncNow">立即同步</button>') +
+      '</div>',
+      {
+        onMount: function (box) {
+          const setup = box.querySelector('#cloudSetup');
+          if (setup) {
+            setup.onclick = openCloudSetupSheet;
+            return;
+          }
+          box.querySelector('#cloudLogout').onclick = function () {
+            if (!confirm('退出后停止自动同步，本机记录不会删除。确定退出？')) return;
+            w.Cloud.signOut();
+            closeSheet();
+            renderCloudButton();
+            toast('已退出同步账号', 'ok');
+          };
+          box.querySelector('#cloudSyncNow').onclick = function () {
+            const button = this;
+            button.disabled = true;
+            button.textContent = '同步中...';
+            w.Cloud.syncNow().then(function (next) {
+              closeSheet();
+              renderCloudButton(next);
+              toast('同步完成', 'ok');
+            }).catch(function (err) {
+              button.disabled = false;
+              button.textContent = '立即同步';
+              if (/数据库还没建好/.test(err.message || '')) openCloudSetupSheet();
+              else cloudError(box, err.message || '同步失败');
+            });
+          };
+        }
+      }
+    );
+  }
+
+  function openCloudSheet() {
+    if (!w.Cloud) {
+      toast('同步模块没有加载，请点版本号强制刷新', 'warn');
+      return;
+    }
+    const s = w.Cloud.getStatus();
+    if (s.signedIn) {
+      if (s.setupRequired) openCloudSetupSheet();
+      else openCloudAccountSheet();
+      return;
+    }
+
+    sheet(
+      '<div class="sheet-head"><div><h3>电脑手机自动同步</h3>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:3px">登录一次，以后自动完成</div></div></div>' +
+      '<div class="sheet-body">' +
+      '<div class="cloud-intro"><b>同一个邮箱登录电脑和手机</b>，两边的记录会自动合并。' +
+      '本机仍然保留完整数据，断网也能继续用。</div>' +
+      '<div class="field"><label for="cloudEmail">邮箱</label>' +
+      '<input type="email" id="cloudEmail" autocomplete="username" placeholder="name@example.com"></div>' +
+      '<div class="field"><label for="cloudPassword">密码 <span class="opt">至少 6 位</span></label>' +
+      '<input type="password" id="cloudPassword" autocomplete="current-password" placeholder="输入密码"></div>' +
+      '<div class="cloud-error" id="cloudError"></div>' +
+      '<div class="cloud-help">第一次使用先点「创建账号」。如果收到确认邮件，' +
+      '点邮件里的链接后再回来登录。</div>' +
+      '</div>' +
+      '<div class="sheet-foot">' +
+      '<button class="btn btn-quiet" id="cloudRegister">创建账号</button>' +
+      '<button class="btn btn-primary" id="cloudLogin">登录并同步</button>' +
+      '</div>',
+      {
+        onMount: function (box) {
+          const email = box.querySelector('#cloudEmail');
+          const password = box.querySelector('#cloudPassword');
+          const login = box.querySelector('#cloudLogin');
+          const register = box.querySelector('#cloudRegister');
+
+          function fields() {
+            return {
+              email: email.value.trim(),
+              password: password.value
+            };
+          }
+
+          login.onclick = function () {
+            const data = fields();
+            box.querySelector('#cloudError').classList.remove('show');
+            setCloudButtons(box, true);
+            login.textContent = '登录中...';
+            w.Cloud.signIn(data.email, data.password).then(function () {
+              closeSheet();
+              renderCloudButton();
+              tab_state_reset();
+              rerender();
+              toast('已登录，自动同步开启', 'ok');
+            }).catch(function (err) {
+              setCloudButtons(box, false);
+              login.textContent = '登录并同步';
+              if (/数据库还没建好/.test(err.message || '')) openCloudSetupSheet();
+              else cloudError(box, err.message || '登录失败');
+            });
+          };
+
+          register.onclick = function () {
+            const data = fields();
+            box.querySelector('#cloudError').classList.remove('show');
+            setCloudButtons(box, true);
+            register.textContent = '创建中...';
+            w.Cloud.signUp(data.email, data.password).then(function (result) {
+              if (result && result.needsConfirm) {
+                openCloudConfirmSheet(data.email);
+                return;
+              }
+              closeSheet();
+              renderCloudButton();
+              tab_state_reset();
+              rerender();
+              toast('账号已创建，自动同步开启', 'ok');
+            }).catch(function (err) {
+              setCloudButtons(box, false);
+              register.textContent = '创建账号';
+              if (/数据库还没建好/.test(err.message || '')) openCloudSetupSheet();
+              else cloudError(box, err.message || '注册失败');
+            });
+          };
+
+          email.focus();
+        }
+      }
+    );
+  }
+
   function tickPill() {
     const st = Store.get();
     if (!st.running) return;
@@ -197,6 +483,16 @@
 
     renderStorageWarn();
 
+    if (w.Cloud) {
+      w.Cloud.init({
+        onStatus: renderCloudButton,
+        onApplied: function () {
+          tab_state_reset();
+          rerender();
+        }
+      });
+    }
+
     renderNav();
     renderView();
     renderLivePill();
@@ -245,6 +541,8 @@
       Store.exportAll();
       toast('全部数据已导出', 'ok');
     };
+
+    document.getElementById('cloudBtn').onclick = openCloudSheet;
 
     const fileInput = document.getElementById('importFile');
     document.getElementById('importBtn').onclick = function () {
