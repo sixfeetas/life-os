@@ -3,6 +3,8 @@ chcp 65001 >nul
 cd /d "%~dp0"
 set GCM_CREDENTIAL_STORE=dpapi
 set GCM_GUI_PROMPT=true
+set "HTTP_PROXY=http://127.0.0.1:7890"
+set "HTTPS_PROXY=http://127.0.0.1:7890"
 echo ==========================================
 echo   Life OS - upload to GitHub
 echo ==========================================
@@ -30,9 +32,9 @@ if errorlevel 1 goto save_error
 :push
 echo.
 echo Step 3: Upload to GitHub.
-git pull --rebase origin main
+git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 pull --rebase origin main
 if errorlevel 1 echo Remote main is not ready yet. Continuing with the first upload.
-git -c http.sslBackend=openssl push -u origin main
+git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 -c http.sslBackend=openssl push -u origin main
 if errorlevel 1 goto push_error
 set "RESULT=0"
 echo.
