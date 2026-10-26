@@ -9,8 +9,8 @@
    不限制条数和长度——那只会误伤深聊，拦不住空转。
    真正限制的是「空转」：连续几轮什么都没产出，才提示。
 
-   观点必须有证据才算数：3 次独立证据 = 内化。
-   落地率（有证据的观点 / 提出的观点）是唯一衡量指标。
+   观点必须有证据才算数：3 次支持证据 = 内化。
+   反证和“说不清”也必须保留；落地率只是参考，不是分数。
    ============================================================ */
 (function (w) {
 
@@ -41,6 +41,33 @@
       h += '<i class="' + (i < n ? 'on' : '') + '"></i>';
     }
     return h + '</span>';
+  }
+
+  function evidenceCounts(insight) {
+    const out = { support: 0, counter: 0, unclear: 0 };
+    ((insight && insight.evidences) || []).forEach(function (ev) {
+      const stance = ev && (ev.stance || 'support');
+      if (stance === 'counter' || stance === 'unclear') out[stance]++;
+      else out.support++;
+    });
+    return out;
+  }
+
+  function weekRange() {
+    const end = todayKey();
+    return { start: U.shiftKey(end, -6), end: end };
+  }
+
+  function weekKeyFor(dayKey) {
+    const d = U.keyToDate(dayKey);
+    const mondayOffset = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - mondayOffset);
+    return 'week-' + U.dateStr(d.getTime());
+  }
+
+  function reasonLabel(id) {
+    const reason = D.REASONS.find(function (item) { return item.id === id; });
+    return reason ? reason.label : '未标注';
   }
 
   function daysSince(ts) {
@@ -80,7 +107,7 @@
       if (it.status === 'dropped' || it.status === 'internalized') return false;
       if (!it.action || !it.action.text) return false;
       const last = it.lastEvidenceAt || it.createdAt;
-      return daysSince(last) >= 3 && (!it.evidences || it.evidences.length === 0);
+      return daysSince(last) >= 3 && evidenceCounts(it).support === 0;
     });
     if (stale) {
       return {
@@ -109,14 +136,16 @@
       };
     }
 
-    // 5. 落地率过低
+    // 5. 有观点、有动作，但行动没有闭合
     const lr = Store.landingRate();
     if (lr.total >= 5 && lr.rate !== null && lr.rate < 0.3) {
+      const loop = Store.actionLoop();
       return {
         kind: 'inflate',
-        q: '你提出了 ' + lr.total + ' 个观点，只有 ' + lr.withEvidence +
-           ' 个落到了地上。你现在是在收集观点，还是在改变行为？',
-        action: '暂停新增观点，先把一个做到 3 次证据'
+        q: '你提出了 ' + lr.total + ' 个观点，其中 ' + loop.withAction +
+           ' 个有具体动作，' + loop.completedTasks + ' 个动作真正完成了。' +
+           '哪一步断了？',
+        action: '选一个有动作的观点，完成一次并记录证据；做不到就改动作或放弃它'
       };
     }
 
@@ -126,11 +155,21 @@
       .sort(function (a, b) { return (b.lastEvidenceAt || 0) - (a.lastEvidenceAt || 0); })[0];
     if (withEv) {
       const last = withEv.evidences[withEv.evidences.length - 1];
+      const stance = last.stance === 'counter' || last.stance === 'unclear'
+        ? last.stance
+        : 'support';
+      const prefix = stance === 'counter'
+        ? '上次留下的是一条反证：'
+        : stance === 'unclear'
+          ? '上次仍然说不清：'
+          : '上次的支持证据是：';
       return {
         kind: 'followup',
-        q: '「' + withEv.claim + '」上次的证据是：' + (last.text || '（没写内容）') +
-           '。这次它还会成立吗？',
-        action: '今天再试一次，看是否重复'
+        q: '「' + withEv.claim + '」' + prefix + (last.text || '（没写内容）') +
+           (stance === 'counter' ? '。它是否已经足以推翻原观点？' : '。这次它还会成立吗？'),
+        action: stance === 'counter'
+          ? '先判断原观点是否该修改或放弃，不要急着补一条支持证据'
+          : '今天再试一次，看是否重复'
       };
     }
 
@@ -149,36 +188,47 @@
     html.push('<div class="page-head"><div class="date">自省' +
       '<span class="weekday">周三层 · 只看证据</span></div></div>');
 
-    /* 落地率总览 */
+    /* 证据与行动总览 */
     const lr = Store.landingRate();
+    const loop = Store.actionLoop();
     const internalized = s.insights.filter(function (x) { return x.status === 'internalized'; }).length;
     const testing = s.insights.filter(function (x) {
       return x.status === 'testing' || x.status === 'verified';
     }).length;
 
     html.push('<div class="card">');
-    html.push('<div class="card-title">落地率 <span class="rt">唯一衡量指标</span></div>');
+    html.push('<div class="card-title">观点与行动 <span class="rt">参考指标，不是分数</span></div>');
     if (lr.total === 0) {
       html.push('<div class="rate-note" style="margin-top:0">' +
-        '还没有观点。落地率 = 有证据的观点 ÷ 提出的观点。<br>' +
-        '不是写了多少字，不是连续多少天。</div>');
+        '还没有观点。这里会同时看三件事：有没有具体动作、动作有没有完成、结果有没有改变你的判断。</div>');
     } else {
       const pct = lr.rate === null ? 0 : Math.round(lr.rate * 100);
       html.push(
         '<div class="plan-bar">' +
         '<div class="pb"><span class="v ' + (pct >= 60 ? 'green' : pct >= 30 ? 'blue' : 'pink') + '">' +
-        pct + '%</span><span class="k">落地率</span></div>' +
-        '<div class="pb"><span class="v">' + lr.total + '</span><span class="k">观点</span></div>' +
+        pct + '%</span><span class="k">有支持证据</span></div>' +
+        '<div class="pb"><span class="v">' + lr.total + '</span><span class="k">进行中观点</span></div>' +
         '<div class="pb"><span class="v green">' + internalized + '</span><span class="k">已内化</span></div>' +
         '<div class="pb"><span class="v">' + testing + '</span><span class="k">试验中</span></div>' +
         '</div>' +
         '<div class="rate-bar"><div class="fill" style="width:' + pct + '%"></div></div>' +
         '<div class="rate-note">' +
-        lr.withEvidence + ' 个观点有证据，' + (lr.total - lr.withEvidence) + ' 个还停在嘴上。' +
-        (pct < 30 ? '<br><b style="color:var(--ctp-yellow)">低于 30%：这套自省正在变成装饰品。</b>要么少提观点，要么多落地。' : '') +
+        lr.withEvidence + ' 个观点有支持证据。比例低不要求你少提观点；先检查动作是否太大、太模糊，或者根本不值得做。' +
         '</div>'
       );
     }
+    html.push(
+      '<div class="loop-title">行动闭环 <span>累计</span></div>' +
+      '<div class="loop-grid">' +
+      '<div class="loop-cell"><b>' + loop.withAction + '</b><span>有具体动作</span></div>' +
+      '<div class="loop-cell"><b class="blue">' + loop.convertedToTask + '</b><span>转成任务</span></div>' +
+      '<div class="loop-cell"><b class="green">' + loop.completedTasks + '</b><span>任务完成</span></div>' +
+      '<div class="loop-cell"><b class="green">' + loop.support + '</b><span>支持证据</span></div>' +
+      '<div class="loop-cell"><b class="pink">' + loop.counter + '</b><span>反证</span></div>' +
+      '</div>' +
+      '<div class="rate-note">闭环不是“想明白”，而是：有动作 → 转成任务 → 完成 → 记录结果。' +
+      (loop.counter ? ' 已有反证，说明观点正在接受真实检验。' : '') + '</div>'
+    );
     html.push('</div>');
 
     /* 今日提问 */
@@ -211,9 +261,166 @@
     bind(root, ctx, dq);
   }
 
+  /* ---------- 跨模块周复盘 ---------- */
+  function weeklyReviewHTML(s) {
+    const range = weekRange();
+    const weekKey = weekKeyFor(range.end);
+    const saved = Store.getWeeklyReview(weekKey);
+    const sessions = s.sessions.filter(function (item) {
+      return item.dayKey >= range.start && item.dayKey <= range.end;
+    });
+    const activeDays = {};
+    const tagMs = {};
+    let totalMs = 0;
+
+    sessions.forEach(function (item) {
+      const duration = Math.max(0, item.end - item.start);
+      activeDays[item.dayKey] = true;
+      totalMs += duration;
+      tagMs[item.tag || 'other'] = (tagMs[item.tag || 'other'] || 0) + duration;
+    });
+
+    const tagRows = Object.keys(tagMs).map(function (tagId) {
+      return { id: tagId, ms: tagMs[tagId] };
+    }).sort(function (a, b) {
+      return b.ms - a.ms;
+    });
+
+    const repeated = s.tasks.filter(function (task) {
+      return task.status === 'open' && (task.deferCount || 0) >= 2;
+    }).sort(function (a, b) {
+      return (b.deferCount || 0) - (a.deferCount || 0);
+    }).slice(0, 4);
+
+    const incomplete = s.tasks.filter(function (task) {
+      if (task.status !== 'open' && task.status !== 'missed') return false;
+      return task.dayKey >= range.start && task.dayKey <= range.end;
+    });
+    const reasonCounts = {};
+    incomplete.forEach(function (task) {
+      const key = task.reason || 'unknown';
+      reasonCounts[key] = (reasonCounts[key] || 0) + 1;
+    });
+    const reasonRows = Object.keys(reasonCounts).map(function (key) {
+      return { key: key, count: reasonCounts[key] };
+    }).sort(function (a, b) {
+      return b.count - a.count;
+    });
+
+    const supportByInsight = {};
+    const counterByInsight = {};
+    s.insights.forEach(function (insight) {
+      (insight.evidences || []).forEach(function (ev) {
+        const key = U.dayKey(ev.at, s.meta.dayStartHour);
+        if (key < range.start || key > range.end) return;
+        const stance = ev.stance || 'support';
+        if (stance === 'support') supportByInsight[insight.id] = (supportByInsight[insight.id] || 0) + 1;
+        if (stance === 'counter') counterByInsight[insight.id] = (counterByInsight[insight.id] || 0) + 1;
+      });
+    });
+
+    const changed = function (counts) {
+      return s.insights.filter(function (insight) {
+        return !!counts[insight.id];
+      }).map(function (insight) {
+        return { claim: insight.claim, count: counts[insight.id] };
+      }).sort(function (a, b) {
+        return b.count - a.count;
+      });
+    };
+    const supported = changed(supportByInsight);
+    const countered = changed(counterByInsight);
+
+    const html = [];
+    html.push(
+      '<details class="card weekly-review" open>' +
+      '<summary><span>最近 7 个逻辑日 · 合起来看</span>' +
+      '<em>' + U.esc(range.start.slice(5).replace('-', '/')) + ' - ' +
+      U.esc(range.end.slice(5).replace('-', '/')) + '</em></summary>' +
+      '<div class="week-stats">' +
+      '<div><b>' + Object.keys(activeDays).length + '</b><span>有记录的天</span></div>' +
+      '<div><b>' + sessions.length + '</b><span>条记录</span></div>' +
+      '<div><b>' + U.dur(totalMs) + '</b><span>总时长</span></div>' +
+      '<div><b>' + incomplete.length + '</b><span>未闭合任务</span></div>' +
+      '</div>'
+    );
+
+    html.push('<div class="week-section"><div class="week-h">时间去了哪里</div>');
+    if (tagRows.length) {
+      html.push('<div class="week-tags">' + tagRows.slice(0, 5).map(function (row) {
+        const tag = D.tag(row.id);
+        return '<span style="--tagc:' + tag.color + '"><i></i>' +
+          U.esc(tag.label) + ' · ' + U.dur(row.ms) + '</span>';
+      }).join('') + '</div>');
+    } else {
+      html.push('<div class="week-empty">这 7 天还没有记录。</div>');
+    }
+    html.push('</div>');
+
+    html.push('<div class="week-section"><div class="week-h">反复顺延</div>');
+    if (repeated.length) {
+      html.push('<div class="week-list">' + repeated.map(function (task) {
+        return '<div><span>' + U.esc(task.title || '（未命名）') + '</span>' +
+          '<b>' + task.deferCount + ' 次</b></div>';
+      }).join('') + '</div>');
+    } else {
+      html.push('<div class="week-empty">没有顺延 2 次以上的任务。</div>');
+    }
+    html.push('</div>');
+
+    html.push('<div class="week-section"><div class="week-h">没有闭合的任务</div>');
+    if (incomplete.length) {
+      html.push('<div class="week-tags week-reasons">' + reasonRows.map(function (row) {
+        return '<span>' + U.esc(reasonLabel(row.key === 'unknown' ? '' : row.key)) +
+          ' · ' + row.count + '</span>';
+      }).join('') + '</div>');
+      html.push('<div class="week-list">' + incomplete.slice(0, 5).map(function (task) {
+        return '<div><span>' + U.esc(task.title || '（未命名）') + '</span>' +
+          '<em>' + U.esc(task.reason ? reasonLabel(task.reason) : '未标原因') + '</em></div>';
+      }).join('') + '</div>');
+    } else {
+      html.push('<div class="week-empty">这 7 天的任务都闭合了。</div>');
+    }
+    html.push('</div>');
+
+    html.push('<div class="week-section"><div class="week-h">观点发生了什么</div>');
+    if (supported.length || countered.length) {
+      html.push('<div class="week-change">');
+      supported.slice(0, 3).forEach(function (item) {
+        html.push('<div class="support"><span>获得支持</span>' + U.esc(item.claim) +
+          '<b>+' + item.count + '</b></div>');
+      });
+      countered.slice(0, 3).forEach(function (item) {
+        html.push('<div class="counter"><span>被反证</span>' + U.esc(item.claim) +
+          '<b>+' + item.count + '</b></div>');
+      });
+      html.push('</div>');
+    } else {
+      html.push('<div class="week-empty">这 7 天没有新的支持证据或反证。</div>');
+    }
+    html.push('</div>');
+
+    html.push(
+      '<div class="week-focus">' +
+      '<label for="weeklyFocus">下周只改一件事</label>' +
+      '<textarea id="weeklyFocus" maxlength="120" placeholder="写一个能观察结果的动作，不写“更努力”">' +
+      U.esc(saved ? saved.focus : '') + '</textarea>' +
+      '<div class="week-focus-foot">' +
+      '<span>' + (saved && saved.updatedAt
+        ? '上次保存 ' + U.dateStr(saved.updatedAt).slice(5).replace('-', '/')
+        : '还没有保存') + '</span>' +
+      '<button class="btn btn-primary btn-sm" id="saveWeekly">保存这件事</button>' +
+      '</div></div>'
+    );
+    html.push('</details>');
+    return html.join('');
+  }
+
   /* ---------- 观点列表 ---------- */
   function insightsHTML(s) {
     const html = [];
+
+    html.push(weeklyReviewHTML(s));
 
     /* 防通胀：同主题重复 */
     const themeMap = {};
@@ -274,23 +481,34 @@
   }
 
   function insightCardHTML(it) {
-    const n = (it.evidences || []).length;
+    const counts = evidenceCounts(it);
     const canAddEv = it.status !== 'dropped';
     const html = [];
 
-    html.push('<div class="ins ' + it.status + '" data-ins="' + it.id + '">');
+    html.push('<div class="ins ' + it.status + (counts.counter ? ' has-counter' : '') +
+      '" data-ins="' + it.id + '">');
 
     html.push(
       '<div class="ins-head">' +
       '<span class="ins-state">' + (STATUS[it.status] ? STATUS[it.status].label : it.status) + '</span>' +
       (it.theme ? '<span class="ins-theme">#' + U.esc(it.theme) + '</span>' : '') +
-      '<span class="ins-ev">' + dotRow(Math.min(n, 3)) +
-      '<span class="n">' + n + '/3</span></span>' +
+      '<span class="ins-ev">' + dotRow(Math.min(counts.support, 3)) +
+      '<span class="n">支持 ' + counts.support + ' · 反证 ' + counts.counter +
+      (counts.unclear ? ' · 说不清 ' + counts.unclear : '') + '</span></span>' +
       '</div>'
     );
 
     html.push('<div class="ins-claim">' + U.esc(it.claim || '（无内容）') + '</div>');
     if (it.quote) html.push('<div class="ins-quote">' + U.esc(it.quote) + '</div>');
+    if (it.falsifier) {
+      html.push('<div class="ins-falsifier"><span>什么会证明我错了</span>' +
+        U.esc(it.falsifier) + '</div>');
+    }
+    if (counts.counter) {
+      html.push('<div class="ins-counter-warning">' +
+        '已有 ' + counts.counter + ' 条反证。这个观点可能不成立，先看反例，不要急着解释掉它。' +
+        '</div>');
+    }
 
     if (it.action && it.action.text) {
       const meta = [];
@@ -314,12 +532,17 @@
     }
 
     /* 证据列表 */
-    if (n) {
+    if (it.evidences && it.evidences.length) {
       html.push('<div class="ev-list">');
       it.evidences.forEach(function (ev) {
+        const stance = ev.stance === 'counter' || ev.stance === 'unclear'
+          ? ev.stance
+          : 'support';
+        const stanceLabel = { support: '支持', counter: '反证', unclear: '说不清' }[stance];
         html.push(
-          '<div class="ev-item">' +
+          '<div class="ev-item ' + stance + '">' +
           '<span class="d">' + U.dateStr(ev.at).slice(5).replace('-', '/') + '</span>' +
+          '<span class="stance">' + stanceLabel + '</span>' +
           '<span class="t">' + U.esc(ev.text || '（没写内容）') + '</span>' +
           (it.status !== 'dropped'
             ? '<button class="x" data-del-ev="' + it.id + '|' + ev.id + '" title="删除这条证据">×</button>'
@@ -613,6 +836,16 @@
       render(root, ctx);
     });
 
+    on('saveWeekly', 'click', function () {
+      const focus = document.getElementById('weeklyFocus').value.trim();
+      if (!focus) {
+        ctx.toast('写下一件下周要改的事', 'warn');
+        return;
+      }
+      Store.saveWeeklyReview(weekKeyFor(todayKey()), focus);
+      ctx.toast('周复盘已保存', 'ok');
+    });
+
     /* 新建 / 编辑观点 */
     on('newInsight', 'click', function () { openInsightSheet(null, ctx); });
     root.querySelectorAll('[data-edit-ins]').forEach(function (b) {
@@ -634,8 +867,10 @@
           title: it.action.text,
           estMin: it.action.minutes || 20,
           trigger: it.action.trigger || '',
-          doneRule: it.action.evidence || ''
+          doneRule: it.action.evidence || '',
+          insightId: it.id
         });
+        Store.updateInsight(it.id, { action: { taskId: t.id } });
         ctx.toast('已加入今日任务', 'ok');
         setTimeout(function () {
           if (confirm('去「计划」看看这条任务？')) ctx.go('plan');
@@ -767,6 +1002,10 @@
       '<input type="text" id="iQuote" maxlength="120" placeholder="从哪来的？日记、对话、某本书" value="' +
       U.esc(it ? it.quote : '') + '"></div>' +
 
+      '<div class="field"><label>什么结果会证明我错了？ <span class="opt">可选，但很重要</span></label>' +
+      '<textarea id="iFalsifier" maxlength="120" placeholder="例如：连续三次在安静环境里仍无法专注，就说明“专注靠减少选择”不成立">' +
+      U.esc(it ? it.falsifier : '') + '</textarea></div>' +
+
       '<div class="field"><label>主题 <span class="opt">同类观点出现 3 次会提醒你</span></label>' +
       '<div class="tag-grid" id="iThemes">' +
       THEME_SUGGEST.map(function (t) {
@@ -831,6 +1070,7 @@
             claim: claim,
             quote: box.querySelector('#iQuote').value.trim(),
             theme: finalTheme,
+            falsifier: box.querySelector('#iFalsifier').value.trim(),
             action: {
               text: box.querySelector('#iAct').value.trim(),
               trigger: box.querySelector('#iTrig').value.trim(),
@@ -875,7 +1115,7 @@
   function openEvidenceSheet(id, ctx) {
     const it = Store.getInsight(id);
     if (!it) return;
-    const n = (it.evidences || []).length;
+    const counts = evidenceCounts(it);
 
     /* 可关联的今天已闭合任务 */
     const doneTasks = Store.tasksOfDay(todayKey()).filter(function (t) {
@@ -883,17 +1123,28 @@
     });
 
     const html =
-      '<div class="sheet-head"><div><h3>加一次证据</h3>' +
+      '<div class="sheet-head"><div><h3>加一条证据</h3>' +
       '<div style="font-size:12px;color:var(--dim);margin-top:3px">' +
-      '第 ' + (n + 1) + ' 次 · 满 3 次算内化</div></div>' +
-      '<div class="dur">' + dotRow(Math.min(n, 3)) + '</div>' +
+      '支持 ' + counts.support + ' · 反证 ' + counts.counter +
+      (counts.unclear ? ' · 说不清 ' + counts.unclear : '') + '</div></div>' +
+      '<div class="dur">' + dotRow(Math.min(counts.support, 3)) + '</div>' +
       '</div>' +
       '<div class="sheet-body">' +
       '<div class="field"><label>观点</label>' +
       '<div style="font-size:13.5px;line-height:1.6;color:var(--sub)">' +
       U.esc(it.claim) + '</div></div>' +
 
-      '<div class="field"><label>这次发生了什么 <span class="opt">事实，不是解释</span></label>' +
+      '<div class="field"><label>这条证据是在说什么 <span class="opt">三类都要保留</span></label>' +
+      '<div class="stance-switch" id="evStance">' +
+      '<button type="button" class="on support" data-stance="support">' +
+      '<b>支持这个观点</b><span>结果符合预期</span></button>' +
+      '<button type="button" class="counter" data-stance="counter">' +
+      '<b>反驳这个观点</b><span>结果与预期相反</span></button>' +
+      '<button type="button" class="unclear" data-stance="unclear">' +
+      '<b>目前说不清</b><span>信息还不够</span></button>' +
+      '</div></div>' +
+
+      '<div class="field"><label id="evTextLabel">支持这个观点的事实 <span class="opt">事实，不是解释</span></label>' +
       '<textarea id="evText" placeholder="例如：手机放另一个房间，写完 40 分钟没被打断"></textarea>' +
       '</div>' +
 
@@ -910,14 +1161,49 @@
           }).join('') +
           '</select></div>'
         : '') +
+
+      (it.falsifier
+        ? '<div class="field"><label>你事先写下的反证条件</label>' +
+          '<div class="evidence-falsifier">' + U.esc(it.falsifier) + '</div></div>'
+        : '') +
       '</div>' +
       '<div class="sheet-foot">' +
       '<button class="btn btn-quiet" id="evCancel">取消</button>' +
-      '<button class="btn btn-primary" id="evSave">记下证据</button>' +
+      '<button class="btn btn-primary" id="evSave">记下支持证据</button>' +
       '</div>';
 
     ctx.sheet(html, {
       onMount: function (box) {
+        let stance = 'support';
+        const labels = {
+          support: '支持这个观点的事实',
+          counter: '怎么反驳了这个观点',
+          unclear: '为什么这次还说不清'
+        };
+        const placeholders = {
+          support: '例如：手机放另一个房间，写完 40 分钟没被打断',
+          counter: '例如：手机放另一个房间后，还是连续刷了 30 分钟，并没有更专注',
+          unclear: '例如：今天状态很差，无法判断是这个方法还是睡眠不足导致的'
+        };
+        const buttonLabels = {
+          support: '记下支持证据',
+          counter: '保留这条反证',
+          unclear: '记作“说不清”'
+        };
+
+        box.querySelectorAll('#evStance [data-stance]').forEach(function (button) {
+          button.onclick = function () {
+            stance = button.dataset.stance;
+            box.querySelectorAll('#evStance [data-stance]').forEach(function (item) {
+              item.classList.toggle('on', item === button);
+            });
+            box.querySelector('#evTextLabel').innerHTML =
+              labels[stance] + ' <span class="opt">事实，不是解释</span>';
+            box.querySelector('#evText').placeholder = placeholders[stance];
+            box.querySelector('#evSave').textContent = buttonLabels[stance];
+          };
+        });
+
         box.querySelector('#evCancel').onclick = function () { ctx.closeSheet(); };
         box.querySelector('#evSave').onclick = function () {
           const text = box.querySelector('#evText').value.trim();
@@ -925,15 +1211,24 @@
           const sel = box.querySelector('#evTask');
           Store.addEvidence(id, {
             text: text,
-            taskId: sel && sel.value ? sel.value : null
+            taskId: sel && sel.value ? sel.value : null,
+            stance: stance
           });
           markProduced('evidence');
           ctx.closeSheet();
           const after = Store.getInsight(id);
-          const cnt = after.evidences.length;
-          if (cnt >= 3) ctx.toast('第 3 次证据 · 已内化', 'ok');
-          else if (cnt === 2) ctx.toast('第 2 次证据 · 已验证（再 1 次算内化）', 'ok');
-          else ctx.toast('第 1 次证据 · 开始试验', 'ok');
+          const afterCounts = evidenceCounts(after);
+          if (stance === 'counter') {
+            ctx.toast('反证已保留 · 这个观点可能不成立', 'warn');
+          } else if (stance === 'unclear') {
+            ctx.toast('已记作“说不清” · 不推进状态', 'ok');
+          } else if (afterCounts.support >= 3) {
+            ctx.toast('第 3 次支持证据 · 已内化', 'ok');
+          } else if (afterCounts.support === 2) {
+            ctx.toast('第 2 次支持证据 · 已验证（再 1 次算内化）', 'ok');
+          } else {
+            ctx.toast('第 1 次支持证据 · 开始试验', 'ok');
+          }
         };
         box.querySelector('#evText').focus();
       }
@@ -1125,21 +1420,43 @@
       }
     });
 
-    /* 3. 观点给了动作，却零证据 */
+    /* 3. 观点给了动作，却没有支持证据 */
     s.insights.forEach(function (it) {
       if (it.status === 'dropped' || it.status === 'internalized') return;
-      const n = (it.evidences || []).length;
-      if (it.action && it.action.text && n === 0) {
+      const counts = evidenceCounts(it);
+      if (it.action && it.action.text && counts.support === 0) {
         const days = Math.floor((Date.now() - it.createdAt) / 86400000);
+        const extra = [];
+        if (counts.counter) extra.push('反证 ' + counts.counter + ' 条');
+        if (counts.unclear) extra.push('说不清 ' + counts.unclear + ' 条');
         items.push({
           kind: 'no-evidence',
           text: '观点「' + it.claim + '」提出 ' + days + ' 天了，动作是「' +
-                it.action.text + '」，但至今 0 次证据'
+                it.action.text + '」，但至今 0 次支持证据' +
+                (extra.length ? '（' + extra.join('、') + '）' : '')
         });
       }
     });
 
-    /* 4. 低情绪 + 长时长（回避信号） */
+    /* 4. 明确的反证：不要解释掉它，先看它是否推翻原观点 */
+    s.insights.forEach(function (it) {
+      if (it.status === 'dropped') return;
+      const counts = evidenceCounts(it);
+      if (!counts.counter) return;
+      const lastCounter = (it.evidences || []).filter(function (ev) {
+        return ev.stance === 'counter';
+      }).sort(function (a, b) {
+        return (b.at || 0) - (a.at || 0);
+      })[0];
+      items.push({
+        kind: 'counter-evidence',
+        text: '观点「' + it.claim + '」已有 ' + counts.counter + ' 条反证。最近一次是：' +
+              ((lastCounter && lastCounter.text) || '（无内容）') +
+              (it.falsifier ? '。你事先写的证伪条件是：' + it.falsifier : '')
+      });
+    });
+
+    /* 5. 低情绪 + 长时长（回避信号） */
     s.sessions.forEach(function (x) {
       if (x.mood != null && x.mood <= 2 && (x.end - x.start) >= 30 * 60000) {
         items.push({
@@ -1151,7 +1468,7 @@
       }
     });
 
-    /* 5. 说了要做，但没变成任务 */
+    /* 6. 说了要做，但没变成任务 */
     s.sessions.forEach(function (x) {
       if (x.plan && !x.planDrafted) {
         items.push({
@@ -1161,7 +1478,7 @@
       }
     });
 
-    /* 6. 同主题重复提 */
+    /* 7. 同主题重复提 */
     const themeMap = {};
     s.insights.forEach(function (it) {
       if (it.status === 'dropped' || !it.theme) return;
@@ -1177,7 +1494,7 @@
       }
     });
 
-    /* 7. 该做基线了 */
+    /* 8. 该做基线了 */
     if (!Store.hasBaseline() && s.sessions.length >= 10) {
       items.push({
         kind: 'no-baseline',
@@ -1223,6 +1540,7 @@
           ];
           if (x.title) bits.push('「' + x.title + '」');
           if (x.mood != null) bits.push('情绪' + x.mood + '/5');
+          if (x.stopReason) bits.push('为什么停：' + reasonLabel(x.stopReason));
           if (x.note) bits.push('备注：' + x.note);
           if (x.taskId) bits.push('[关联任务]');
           if (x.backfilled) bits.push('[补记]');
@@ -1271,13 +1589,24 @@
       lines.push('（无）');
     } else {
       s.insights.forEach(function (it) {
-        const n = (it.evidences || []).length;
-        const parts = ['[' + it.status + ']', '「' + it.claim + '」', '证据' + n + '/3'];
+        const counts = evidenceCounts(it);
+        const parts = [
+          '[' + it.status + ']',
+          '「' + it.claim + '」',
+          '支持' + counts.support,
+          '反证' + counts.counter,
+          '说不清' + counts.unclear
+        ];
         if (it.theme) parts.push('主题：' + it.theme);
         if (it.action && it.action.text) parts.push('动作：' + it.action.text);
+        if (it.falsifier) parts.push('证伪条件：' + it.falsifier);
         lines.push('- ' + parts.join(' · '));
         (it.evidences || []).forEach(function (ev) {
-          lines.push('    · ' + U.dateStr(ev.at) + ' ' + (ev.text || '（无内容）'));
+          const stance = ev.stance === 'counter' || ev.stance === 'unclear'
+            ? ev.stance
+            : 'support';
+          const label = { support: '支持', counter: '反证', unclear: '说不清' }[stance];
+          lines.push('    · [' + label + '] ' + U.dateStr(ev.at) + ' ' + (ev.text || '（无内容）'));
         });
       });
     }
@@ -1289,6 +1618,21 @@
       s.anchors.forEach(function (a) {
         lines.push('- [' + (a.kind === 'baseline' ? '基线' : '探针') + '] ' + a.title +
           ' · 结果：' + (a.result || '未测') + (a.note ? ' · ' + a.note : ''));
+      });
+    }
+
+    const reviewKeys = Object.keys(s.weeklyReviews || {}).sort(function (a, b) {
+      return (Number(s.weeklyReviews[b] && s.weeklyReviews[b].updatedAt) || 0) -
+        (Number(s.weeklyReviews[a] && s.weeklyReviews[a].updatedAt) || 0);
+    }).slice(0, 3);
+    if (reviewKeys.length) {
+      lines.push('');
+      lines.push('## 用户自己写下的周复盘');
+      reviewKeys.forEach(function (key) {
+        const review = s.weeklyReviews[key];
+        if (review && review.focus) {
+          lines.push('- ' + key + '：下周只改一件事——' + review.focus);
+        }
       });
     }
 
@@ -1308,6 +1652,7 @@
       '5. 只给 1 条建议，而且必须今天或明天能做完、有完成标准。',
       '6. 如果你发现素材不足以支撑任何判断，直接说「数据不够，我下不了结论」，并说明缺什么。',
       '7. 不要鼓励、不要夸奖、不要写励志句。',
+      '8. 反证与支持证据同等重要。不要解释掉反证，也不要把反证说成支持；无法判断时明确说不确定。',
       '',
       '输出格式（严格按这个结构）：',
       '【我看到的】3–5 条，每条带具体日期或任务名。',
@@ -1397,6 +1742,7 @@
       '7. 不要重复你之前说过的话。',
       '8. 如果他在问「这个功能怎么用」这类元问题，直接回答，不要扯数据。',
       '9. 他问得越具体，就答得越具体；不要用长度限制自己。',
+      '10. 反证不能被当成支持证据，也不能用一句解释把它消掉；必要时直接说原观点可能不成立。',
       ''
     ];
 

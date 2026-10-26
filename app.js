@@ -474,6 +474,107 @@
     };
   }
 
+  function importTime(value) {
+    if (!value) return '未标注';
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return '未标注';
+    return d.toLocaleString('zh-CN', { hour12: false });
+  }
+
+  function openImportSheet(text, filename) {
+    let preview;
+    try {
+      preview = Store.previewImport(text);
+    } catch (err) {
+      toast('导入失败：' + (err.message || '文件格式不对'), 'warn');
+      return;
+    }
+
+    const current = preview.current;
+    const html =
+      '<div class="sheet-head"><div><h3>恢复备份</h3>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:3px">' +
+      U.esc(filename || '备份文件') + '</div></div></div>' +
+      '<div class="sheet-body">' +
+      '<div class="cloud-intro"><b>默认使用“合并”，不会删除这台设备或云端已有的记录。</b><br>' +
+      '导入前会自动留下一份本机快照。相同的记录不会重复添加。</div>' +
+      '<div class="field"><label>备份内容</label>' +
+      '<div class="plan-bar">' +
+      '<div class="pb"><span class="v">' + preview.sessions + '</span><span class="k">记录</span></div>' +
+      '<div class="pb"><span class="v">' + preview.tasks + '</span><span class="k">任务</span></div>' +
+      '<div class="pb"><span class="v">' + preview.insights + '</span><span class="k">观点</span></div>' +
+      '<div class="pb"><span class="v">' + preview.anchors + '</span><span class="k">锚点</span></div>' +
+      '</div>' +
+      '<div class="rate-note">导出时间：' + U.esc(importTime(preview.exportedAt)) +
+      '<br>本机现在有 ' + current.sessions + ' 条记录、' + current.tasks + ' 个任务、' +
+      current.insights + ' 个观点、' + current.anchors + ' 个锚点。</div></div>' +
+      '<div class="audit-thin">只有在你确定“本机现有数据全都不要了”时，才使用完整替换。</div>' +
+      '<div class="cloud-error" id="importError"></div>' +
+      '</div>' +
+      '<div class="sheet-foot">' +
+      '<button class="btn btn-quiet" id="importCancel">取消</button>' +
+      '<button class="btn btn-danger" id="importReplace">完整替换</button>' +
+      '<button class="btn btn-primary" id="importMerge">合并导入</button>' +
+      '</div>';
+
+    sheet(html, {
+      onMount: function (box) {
+        const error = box.querySelector('#importError');
+        const buttons = box.querySelectorAll('button');
+        const setBusy = function (busy) {
+          buttons.forEach(function (button) { button.disabled = !!busy; });
+        };
+
+        function finish(mode, result) {
+          tab_state_reset();
+          rerender();
+          closeSheet();
+
+          const message = mode === 'merge'
+            ? '已合并：新增 ' + result.added.sessions + ' 条记录、' +
+              result.added.tasks + ' 个任务、' + result.added.insights + ' 个观点'
+            : '已完整替换本机数据';
+          toast(message, 'ok');
+
+          const cloud = w.Cloud && w.Cloud.getStatus ? w.Cloud.getStatus() : null;
+          if (cloud && cloud.signedIn) {
+            w.Cloud.syncNow().then(function () {
+              renderCloudButton();
+              toast(message + '，云端已同步', 'ok');
+            }).catch(function () {
+              toast(message + '；云端暂时没连上，稍后会自动重试', 'warn');
+            });
+          }
+        }
+
+        box.querySelector('#importCancel').onclick = function () { closeSheet(); };
+        box.querySelector('#importMerge').onclick = function () {
+          error.classList.remove('show');
+          setBusy(true);
+          try {
+            finish('merge', Store.mergeImport(text));
+          } catch (err) {
+            setBusy(false);
+            error.textContent = err.message || '合并导入失败';
+            error.classList.add('show');
+          }
+        };
+        box.querySelector('#importReplace').onclick = function () {
+          if (!confirm('完整替换会移除这台设备上现在多出来的记录。\n\n确定继续？')) return;
+          error.classList.remove('show');
+          setBusy(true);
+          try {
+            finish('replace', Store.replaceAll(text));
+          } catch (err) {
+            setBusy(false);
+            error.textContent = err.message || '替换失败';
+            error.classList.add('show');
+          }
+        };
+      }
+    });
+  }
+
   /* ---------------- 启动 ---------------- */
   function boot() {
     // 跨日：昨天的未闭合任务顺延到今天（幂等，只在有变化时写盘）
@@ -555,11 +656,7 @@
       const reader = new FileReader();
       reader.onload = function () {
         try {
-          if (!confirm('导入会覆盖这台设备上的全部数据，确定继续？')) return;
-          Store.importAll(String(reader.result));
-          tab_state_reset();
-          rerender();
-          toast('导入成功', 'ok');
+          openImportSheet(String(reader.result), f.name);
         } catch (err) {
           toast('导入失败：' + (err.message || '文件格式不对'), 'warn');
         }

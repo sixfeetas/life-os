@@ -3,7 +3,7 @@
    —— 本地工具必须保证改完代码刷新就见效，离线时仍可用。
    每次改样式/脚本，把 CACHE 版本号 +1。
 */
-const CACHE = 'lifeos-v15';
+const CACHE = 'lifeos-v16';
 const ASSETS = [
   './',
   './index.html',

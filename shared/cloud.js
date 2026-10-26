@@ -14,7 +14,7 @@
   const TABLE = '/rest/v1/lifeos_state';
 
   const LIST_FIELDS = ['sessions', 'tasks', 'drafts', 'insights', 'anchors', 'rebuttals'];
-  const OBJECT_FIELDS = ['days', 'chats'];
+  const OBJECT_FIELDS = ['days', 'chats', 'weeklyReviews'];
 
   const SETUP_SQL = [
     'create table if not exists public.lifeos_state (',
@@ -479,6 +479,40 @@
     return Number(tombstones[key] || 0) > Number(stamps[key] || 0);
   }
 
+  function mergeInsightEvidences(localRecord, remoteRecord, winner) {
+    const out = clone(winner || localRecord || remoteRecord || {});
+    const seen = {};
+    const evidences = [];
+    [localRecord, remoteRecord].forEach(function (record) {
+      ((record && record.evidences) || []).forEach(function (ev) {
+        const key = ev && ev.id
+          ? String(ev.id)
+          : [ev && ev.at, ev && ev.stance, ev && ev.text].join('|');
+        if (!key || seen[key]) return;
+        seen[key] = true;
+        evidences.push(clone(ev));
+      });
+    });
+    out.evidences = evidences.sort(function (a, b) {
+      return (Number(a && a.at) || 0) - (Number(b && b.at) || 0);
+    });
+    if (out.status !== 'dropped') {
+      const support = out.evidences.filter(function (ev) {
+        return (ev.stance || 'support') === 'support';
+      }).length;
+      out.status = support >= 3 ? 'internalized'
+        : support === 2 ? 'verified'
+          : support === 1 ? 'testing'
+            : 'proposed';
+    }
+    if (out.evidences.length) {
+      out.lastEvidenceAt = Math.max.apply(null, out.evidences.map(function (ev) {
+        return Number(ev.at) || 0;
+      }));
+    }
+    return out;
+  }
+
   function mergeLists(localState, remoteState, localStamps, remoteStamps, stamps, tombstones) {
     const out = {};
     LIST_FIELDS.forEach(function (field) {
@@ -489,9 +523,20 @@
       Object.keys(remoteMap).forEach(function (id) { ids[id] = true; });
       out[field] = Object.keys(ids).map(function (id) {
         const key = field + '|' + id;
+        const localRecord = localMap[id];
+        const remoteRecord = remoteMap[id];
+        const winner = chooseRecord(
+          localRecord,
+          remoteRecord,
+          key,
+          localStamps,
+          remoteStamps
+        );
         return {
           id: id,
-          record: chooseRecord(localMap[id], remoteMap[id], key, localStamps, remoteStamps)
+          record: field === 'insights'
+            ? mergeInsightEvidences(localRecord, remoteRecord, winner)
+            : winner
         };
       }).filter(function (item) {
         return !tombstoneWins(field + '|' + item.id, stamps, tombstones);
@@ -545,6 +590,15 @@
     const mergedLists = mergeLists(local, remote, localStamps, remoteStamps, stamps, tombstones);
     const days = mergeObjectField(local, remote, 'days', localStamps, remoteStamps, stamps, tombstones);
     const chats = mergeObjectField(local, remote, 'chats', localStamps, remoteStamps, stamps, tombstones);
+    const weeklyReviews = mergeObjectField(
+      local,
+      remote,
+      'weeklyReviews',
+      localStamps,
+      remoteStamps,
+      stamps,
+      tombstones
+    );
 
     let running = null;
     if (local.running && remote.running) {
@@ -572,7 +626,8 @@
       anchors: mergedLists.anchors,
       chats: chats,
       rebuttals: mergedLists.rebuttals,
-      days: days
+      days: days,
+      weeklyReviews: weeklyReviews
     };
 
     const metaWinner = chooseRecord(
@@ -705,7 +760,7 @@
         if (signature(Store.get()) !== signature(mergedState)) {
           applying = true;
           try {
-            Store.importAll(JSON.stringify(mergedState));
+            Store.replaceAll(JSON.stringify(mergedState));
           } finally {
             applying = false;
           }

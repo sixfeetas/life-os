@@ -343,6 +343,7 @@
 
     let mood = s.mood;
     let tag = s.tag;
+    let stopReason = s.stopReason || '';
     let timeOpen = false;
 
     const html =
@@ -366,6 +367,15 @@
       '<div class="mood-row" id="shMoodRow">' + moodRow(mood) + '</div>' +
       '<button class="mood-clear" id="shMoodClear"' + (mood ? '' : ' style="display:none"') + '>清除</button>' +
       '</div>' +
+
+      '<div class="field"><label>为什么停下来 <span class="opt">可选 · 允许说不清</span></label>' +
+      '<div class="tag-grid" id="shStopReasons">' +
+      D.REASONS.map(function (r) {
+        return '<button class="tag-chip' + (r.id === stopReason ? ' on' : '') +
+          '" data-stop-reason="' + r.id + '" style="--tagc:var(--ctp-peach)">' +
+          r.label + '</button>';
+      }).join('') +
+      '</div></div>' +
 
       '<div class="field"><label>备注 <span class="opt">可选</span></label>' +
       '<textarea id="shNote" placeholder="一句话：发生了什么 / 卡在哪">' + U.esc(s.note) + '</textarea></div>' +
@@ -424,6 +434,16 @@
         }
         paintMood();
 
+        /* 停止原因：再点一次取消，不强制填写 */
+        box.querySelectorAll('#shStopReasons .tag-chip').forEach(function (b) {
+          b.onclick = function () {
+            stopReason = stopReason === b.dataset.stopReason ? '' : b.dataset.stopReason;
+            box.querySelectorAll('#shStopReasons .tag-chip').forEach(function (x) {
+              x.classList.toggle('on', x.dataset.stopReason === stopReason);
+            });
+          };
+        });
+
         /* 时间展开 */
         box.querySelector('#shTglTime').onclick = function () {
           timeOpen = !timeOpen;
@@ -437,7 +457,8 @@
             title: box.querySelector('#shTitle').value.trim(),
             note: box.querySelector('#shNote').value.trim(),
             plan: box.querySelector('#shPlan').value.trim(),
-            mood: mood
+            mood: mood,
+            stopReason: stopReason || null
           };
 
           if (timeOpen) {

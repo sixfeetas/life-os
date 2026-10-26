@@ -28,11 +28,14 @@
 
   // 任务未闭合 / 差值归因（Tab 2 使用，先定义好保证数据一致）
   const REASONS = [
-    { id: 'notime',  label: '没时间' },
-    { id: 'harder',  label: '比想象难' },
+    { id: 'distracted', label: '分心' },
+    { id: 'harder',  label: '太难' },
     { id: 'unwilling', label: '不想做' },
     { id: 'interrupted', label: '被打断' },
-    { id: 'badplan', label: '计划本身错了' }
+    { id: 'notime',  label: '没时间' },
+    { id: 'state', label: '状态差' },
+    { id: 'unclear', label: '说不清' },
+    { id: 'badplan', label: '计划错了' }
   ];
 
   const D = {

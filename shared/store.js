@@ -9,6 +9,8 @@
   const KEY = 'lifeos_v1';
   const BACKUP_KEY = 'lifeos_v1_backup';
   const CORRUPT_KEY = 'lifeos_v1_corrupt';
+  const SNAPSHOT_PREFIX = 'lifeos_v1_snapshot_';
+  const SNAPSHOT_LIMIT = 6;
   const VERSION = 1;
 
   let state = null;
@@ -16,6 +18,7 @@
   let dirty = false;
   let loadIssue = '';
   let recoveredFromBackup = false;
+  let recoveredFrom = '';
 
   /* ---------------- 安全存储 ----------------
      手机浏览器用 file:// 打开时，localStorage 可能被禁用（抛异常）。
@@ -28,7 +31,15 @@
       w.localStorage.removeItem(probe);
       return { ok: true, why: '', get: function (k) { return w.localStorage.getItem(k); },
                set: function (k, v) { w.localStorage.setItem(k, v); },
-               del: function (k) { w.localStorage.removeItem(k); } };
+               del: function (k) { w.localStorage.removeItem(k); },
+               keys: function () {
+                 const out = [];
+                 for (let i = 0; i < w.localStorage.length; i++) {
+                   const key = w.localStorage.key(i);
+                   if (key) out.push(key);
+                 }
+                 return out;
+               } };
     } catch (e) {
       const mem = {};
       return {
@@ -36,7 +47,8 @@
         why: (e && e.name) || 'blocked',
         get: function (k) { return (k in mem) ? mem[k] : null; },
         set: function (k, v) { mem[k] = String(v); },
-        del: function (k) { delete mem[k]; }
+        del: function (k) { delete mem[k]; },
+        keys: function () { return Object.keys(mem); }
       };
     }
   })();
@@ -75,6 +87,7 @@
       anchors: [],
       chats: {},                  // { dayKey: [{role,text,at,produced}] }
       rebuttals: [],              // AI 判断被反驳的记录，永久喂回提示词防止重复
+      weeklyReviews: {},          // { weekKey: {focus, updatedAt} }
 
       // 按逻辑日记录的打卡状态
       days: {}
@@ -98,6 +111,7 @@
     if (!s.days || typeof s.days !== 'object') s.days = {};
     if (!s.chats || typeof s.chats !== 'object') s.chats = {};
     if (!Array.isArray(s.rebuttals)) s.rebuttals = [];
+    if (!s.weeklyReviews || typeof s.weeklyReviews !== 'object') s.weeklyReviews = {};
 
     // 清洗观点卡
     s.insights = s.insights
@@ -111,6 +125,7 @@
           source: x.source || 'manual',
           status: x.status || 'proposed',
           evidences: Array.isArray(x.evidences) ? x.evidences : [],
+          falsifier: x.falsifier || '',
           createdAt: x.createdAt || Date.now(),
           lastEvidenceAt: x.lastEvidenceAt || null,
           droppedReason: x.droppedReason || ''
@@ -123,6 +138,7 @@
         it.evidences.forEach(function (e) {
           if (!e.id) e.id = U.uid();
           if (e.text === undefined) e.text = '';
+          if (e.stance !== 'counter' && e.stance !== 'unclear') e.stance = 'support';
         });
         return it;
       });
@@ -154,6 +170,7 @@
       if (x.mood === undefined) x.mood = null;
       if (typeof x.backfilled !== 'boolean') x.backfilled = false;
       if (x.taskId === undefined) x.taskId = null;
+      if (x.stopReason === undefined) x.stopReason = null;
     });
 
     // 清洗任务：补齐缺失字段，丢掉无 id 的坏数据
@@ -173,7 +190,8 @@
           deferCount: t.deferCount || 0,
           reason: t.reason || '',
           delta: t.delta || '',
-          fromDraftId: t.fromDraftId || null
+          fromDraftId: t.fromDraftId || null,
+          insightId: t.insightId || null
         };
         return d;
       });
@@ -181,16 +199,73 @@
     return s;
   }
 
+  function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function snapshotKeys() {
+    return storage.keys()
+      .filter(function (key) { return key.indexOf(SNAPSHOT_PREFIX) === 0; });
+  }
+
+  function snapshotDay(key) {
+    const suffix = key.slice(SNAPSHOT_PREFIX.length);
+    return /^\d{4}-\d{2}-\d{2}$/.test(suffix) ? suffix : '';
+  }
+
+  function snapshotPreImportAt(key) {
+    const marker = '_pre_import_';
+    const index = key.indexOf(marker);
+    return index < 0 ? 0 : Number(key.slice(index + marker.length)) || 0;
+  }
+
+  function snapshotOrder(key) {
+    const day = snapshotDay(key);
+    if (day) {
+      // 当天正常快照代表最后一次成功保存，应排在导入前保护快照之前。
+      return U.keyToDate(day).getTime() + 86399999;
+    }
+    return snapshotPreImportAt(key);
+  }
+
+  function cleanupSnapshots() {
+    snapshotKeys().sort(function (a, b) {
+      return snapshotOrder(b) - snapshotOrder(a);
+    }).slice(SNAPSHOT_LIMIT).forEach(function (key) {
+      try { storage.del(key); } catch (e) { /* 清理失败不影响主数据 */ }
+    });
+  }
+
+  function recoverySnapshotKeys() {
+    const keys = snapshotKeys();
+    const daily = keys.filter(function (key) {
+      return !!snapshotDay(key);
+    }).sort(function (a, b) {
+      return snapshotDay(b).localeCompare(snapshotDay(a));
+    });
+    const preImport = keys.filter(function (key) {
+      return !snapshotDay(key) && snapshotPreImportAt(key) > 0;
+    }).sort(function (a, b) {
+      return snapshotPreImportAt(b) - snapshotPreImportAt(a);
+    });
+    return daily.concat(preImport);
+  }
+
+  function readState(raw, label) {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sessions)) {
+      throw new Error(label + '格式不完整');
+    }
+    return migrate(parsed);
+  }
+
   function load() {
     const primaryRaw = storage.get(KEY);
 
     try {
       if (primaryRaw) {
-        const parsed = JSON.parse(primaryRaw);
-        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sessions)) {
-          throw new Error('数据格式不完整');
-        }
-        state = migrate(parsed);
+        state = readState(primaryRaw, '主数据');
+        recoveredFrom = 'main';
         return state;
       }
     } catch (e) {
@@ -199,16 +274,26 @@
       try { storage.set(CORRUPT_KEY, primaryRaw); } catch (ignore) { /* 空间不足时不影响恢复 */ }
     }
 
+    const keys = recoverySnapshotKeys();
+    for (let i = 0; i < keys.length; i++) {
+      try {
+        state = readState(storage.get(keys[i]), '每日快照');
+        recoveredFromBackup = true;
+        recoveredFrom = keys[i];
+        console.warn('[store] 已从每日快照恢复：' + keys[i]);
+        return state;
+      } catch (e) {
+        loadIssue = loadIssue || (e && e.message) || '每日快照无法读取';
+      }
+    }
+
     try {
       const backupRaw = storage.get(BACKUP_KEY);
       if (backupRaw) {
-        const parsed = JSON.parse(backupRaw);
-        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sessions)) {
-          throw new Error('恢复快照格式不完整');
-        }
-        state = migrate(parsed);
+        state = readState(backupRaw, '旧版恢复快照');
         recoveredFromBackup = true;
-        console.warn('[store] 已从最近一次本机快照恢复');
+        recoveredFrom = BACKUP_KEY;
+        console.warn('[store] 已从旧版恢复快照恢复');
         return state;
       }
     } catch (e) {
@@ -240,6 +325,12 @@
     }
 
     try {
+      const hour = next.meta && next.meta.dayStartHour != null ? next.meta.dayStartHour : 4;
+      const dayKey = U.dayKey(Date.now(), hour);
+      cleanupSnapshots();
+      storage.set(SNAPSHOT_PREFIX + dayKey, json);
+      cleanupSnapshots();
+      // 保留旧键，方便旧版本页面回退时不至于找不到恢复数据。
       storage.set(BACKUP_KEY, json);
     } catch (e) {
       // 主数据已经写入成功；快照失败不应把这次正常保存误报为失败。
@@ -270,6 +361,173 @@
     });
   }
 
+  function parseBackup(input) {
+    let obj = typeof input === 'string' ? JSON.parse(input) : clone(input);
+    if (obj && obj.format === 'lifeos-cloud-v1' && obj.state) obj = obj.state;
+    if (!obj || typeof obj !== 'object' || !Array.isArray(obj.sessions)) {
+      throw new Error('不是有效的 Life OS 备份文件');
+    }
+    return {
+      source: obj,
+      state: migrate(obj),
+      exportedAt: obj._exportedAt || obj.exportedAt || null
+    };
+  }
+
+  function recordStamp(record) {
+    if (!record || typeof record !== 'object') return 0;
+    return Math.max(
+      Number(record.end) || 0,
+      Number(record.closedAt) || 0,
+      Number(record.updatedAt) || 0,
+      Number(record.lastEvidenceAt) || 0,
+      Number(record.at) || 0,
+      Number(record.createdAt) || 0,
+      Number(record.start) || 0
+    );
+  }
+
+  function mergeObjectMaps(current, incoming) {
+    const out = clone(current || {});
+    Object.keys(incoming || {}).forEach(function (key) {
+      if (!Object.prototype.hasOwnProperty.call(out, key)) {
+        out[key] = clone(incoming[key]);
+      }
+    });
+    return out;
+  }
+
+  function mergeUpdatedObjectMaps(current, incoming) {
+    const out = clone(current || {});
+    Object.keys(incoming || {}).forEach(function (key) {
+      const existing = out[key];
+      const candidate = incoming[key];
+      if (!existing || (Number(candidate && candidate.updatedAt) || 0) >
+          (Number(existing && existing.updatedAt) || 0)) {
+        out[key] = clone(candidate);
+      }
+    });
+    return out;
+  }
+
+  function mergeChatMaps(current, incoming) {
+    const out = clone(current || {});
+    Object.keys(incoming || {}).forEach(function (dayKey) {
+      if (!Object.prototype.hasOwnProperty.call(out, dayKey)) {
+        out[dayKey] = clone(incoming[dayKey]);
+        return;
+      }
+      const list = Array.isArray(out[dayKey]) ? out[dayKey] : [];
+      const extra = Array.isArray(incoming[dayKey]) ? incoming[dayKey] : [];
+      const seen = {};
+      list.concat(extra).forEach(function (msg) {
+        const key = msg && msg.id
+          ? String(msg.id)
+          : [msg && msg.at, msg && msg.role, msg && msg.text].join('|');
+        if (!seen[key]) {
+          seen[key] = true;
+          list.push(msg);
+        }
+      });
+      out[dayKey] = list.sort(function (a, b) {
+        return (Number(a && a.at) || 0) - (Number(b && b.at) || 0);
+      });
+    });
+    return out;
+  }
+
+  function mergeInsight(current, incoming) {
+    const out = Object.assign({}, clone(incoming || {}), clone(current || {}));
+    out.action = Object.assign(
+      { text: '', trigger: '', minutes: 20, evidence: '' },
+      incoming && incoming.action || {},
+      current && current.action || {}
+    );
+    out.falsifier = (current && current.falsifier) || (incoming && incoming.falsifier) || '';
+
+    const evidenceMap = {};
+    const evidence = [];
+    [current, incoming].forEach(function (item) {
+      ((item && item.evidences) || []).forEach(function (ev) {
+        const key = ev && ev.id
+          ? String(ev.id)
+          : [ev && ev.at, ev && ev.stance, ev && ev.text].join('|');
+        if (!key || evidenceMap[key]) return;
+        evidenceMap[key] = true;
+        evidence.push(clone(ev));
+      });
+    });
+    out.evidences = evidence.sort(function (a, b) {
+      return (Number(a && a.at) || 0) - (Number(b && b.at) || 0);
+    });
+    if (out.status !== 'dropped') {
+      const support = out.evidences.filter(function (ev) {
+        return (ev.stance || 'support') === 'support';
+      }).length;
+      out.status = support >= 3 ? 'internalized'
+        : support === 2 ? 'verified'
+          : support === 1 ? 'testing'
+            : 'proposed';
+    }
+    if (out.evidences.length) {
+      out.lastEvidenceAt = Math.max.apply(null, out.evidences.map(function (ev) {
+        return Number(ev.at) || 0;
+      }));
+    }
+    return out;
+  }
+
+  function mergeList(currentList, incomingList, field) {
+    const out = Array.isArray(currentList) ? clone(currentList) : [];
+    const seen = {};
+    out.forEach(function (record, index) {
+      const key = record && record.id ? String(record.id) : 'index:' + index;
+      seen[key] = index;
+    });
+
+    (Array.isArray(incomingList) ? incomingList : []).forEach(function (record, index) {
+      const key = record && record.id ? String(record.id) : 'incoming:' + index;
+      if (!Object.prototype.hasOwnProperty.call(seen, key)) {
+        seen[key] = out.length;
+        out.push(clone(record));
+        return;
+      }
+      if (field === 'insights') {
+        out[seen[key]] = mergeInsight(out[seen[key]], record);
+      } else if (recordStamp(record) > recordStamp(out[seen[key]])) {
+        // 同一 id 只在导入记录明显更新时替换；其他冲突保留本机版本。
+        out[seen[key]] = clone(record);
+      }
+    });
+    return out;
+  }
+
+  function commitImported(next, label) {
+    const before = JSON.stringify(state);
+    try {
+      try {
+        const hour = state.meta && state.meta.dayStartHour != null ? state.meta.dayStartHour : 4;
+        const dayKey = U.dayKey(Date.now(), hour);
+        storage.set(SNAPSHOT_PREFIX + dayKey + '_pre_import_' + Date.now(), before);
+      } catch (snapshotError) {
+        console.warn('[store] 导入前快照写入失败，继续执行受保护的导入', snapshotError);
+      }
+      writeSnapshot(next);
+    } catch (e) {
+      try { storage.set(KEY, before); } catch (ignore) { /* 保留内存中的原数据 */ }
+      throw e;
+    }
+    state = next;
+    dirty = false;
+    saveFailed = false;
+    saveError = '';
+    lastSavedAt = Date.now();
+    recoveredFromBackup = false;
+    recoveredFrom = 'main';
+    emit();
+    return label;
+  }
+
   /* ---------------- 对外 API ---------------- */
   const Store = {
     get: function () { return state; },
@@ -295,7 +553,12 @@
         saveError: saveError,
         lastSavedAt: lastSavedAt,
         recovered: recoveredFromBackup,
-        loadIssue: loadIssue
+        recoveredFrom: recoveredFrom,
+        loadIssue: loadIssue,
+        bytes: (function () {
+          try { return JSON.stringify(state || {}).length; } catch (e) { return 0; }
+        })(),
+        snapshots: snapshotKeys().length
       };
     },
 
@@ -317,21 +580,83 @@
       Store.update(function (s) { s.meta.lastBackupAt = Date.now(); });
     },
 
-    importAll: function (text) {
-      const obj = JSON.parse(text);
-      if (!obj || !Array.isArray(obj.sessions)) {
-        throw new Error('不是有效的 Life OS 备份文件');
-      }
-      const next = migrate(obj);
+    parseBackup: function (input) {
+      return parseBackup(input);
+    },
+
+    previewImport: function (input) {
+      const parsed = parseBackup(input);
+      return {
+        exportedAt: parsed.exportedAt,
+        sessions: parsed.state.sessions.length,
+        tasks: parsed.state.tasks.length,
+        insights: parsed.state.insights.length,
+        anchors: parsed.state.anchors.length,
+        chats: Object.keys(parsed.state.chats || {}).length,
+        current: {
+          sessions: state.sessions.length,
+          tasks: state.tasks.length,
+          insights: state.insights.length,
+          anchors: state.anchors.length
+        }
+      };
+    },
+
+    /* 默认导入只合并，绝不删除本机或云端已有记录。 */
+    mergeImport: function (input) {
+      const parsed = parseBackup(input);
+      const incoming = parsed.state;
+      const next = clone(state);
+      next.meta = Object.assign({}, incoming.meta || {}, state.meta || {});
+      next.meta.ai = Object.assign(
+        {},
+        incoming.meta && incoming.meta.ai || {},
+        state.meta && state.meta.ai || {}
+      );
       next.meta.lastOpenedAt = Date.now();
-      writeSnapshot(next);
-      state = next;
-      dirty = false;
-      saveFailed = false;
-      saveError = '';
-      lastSavedAt = Date.now();
-      emit();
-      return next;
+      next.sessions = mergeList(state.sessions, incoming.sessions, 'sessions');
+      next.tasks = mergeList(state.tasks, incoming.tasks, 'tasks');
+      next.drafts = mergeList(state.drafts, incoming.drafts, 'drafts');
+      next.insights = mergeList(state.insights, incoming.insights, 'insights');
+      next.anchors = mergeList(state.anchors, incoming.anchors, 'anchors');
+      next.rebuttals = mergeList(state.rebuttals, incoming.rebuttals, 'rebuttals');
+      next.days = mergeObjectMaps(state.days, incoming.days);
+      next.chats = mergeChatMaps(state.chats, incoming.chats);
+      next.weeklyReviews = mergeUpdatedObjectMaps(state.weeklyReviews, incoming.weeklyReviews);
+      next.running = state.running || clone(incoming.running);
+
+      const before = {
+        sessions: state.sessions.length,
+        tasks: state.tasks.length,
+        insights: state.insights.length,
+        anchors: state.anchors.length
+      };
+      commitImported(migrate(next), 'merge');
+      return {
+        mode: 'merge',
+        added: {
+          sessions: state.sessions.length - before.sessions,
+          tasks: state.tasks.length - before.tasks,
+          insights: state.insights.length - before.insights,
+          anchors: state.anchors.length - before.anchors
+        },
+        snapshot: recoveredFrom
+      };
+    },
+
+    /* 只有用户明确选择“完整替换”时才调用。 */
+    replaceAll: function (input) {
+      const parsed = parseBackup(input);
+      const next = parsed.state;
+      const currentKey = state.meta && state.meta.ai && state.meta.ai.apiKey;
+      if (!next.meta.ai.apiKey && currentKey) next.meta.ai.apiKey = currentKey;
+      next.meta.lastOpenedAt = Date.now();
+      commitImported(migrate(next), 'replace');
+      return { mode: 'replace', snapshot: recoveredFrom };
+    },
+
+    importAll: function (input) {
+      return Store.mergeImport(input);
     },
 
     /* ---------- 会话 ---------- */
@@ -352,6 +677,7 @@
         plan: '',
         mood: null,
         taskId: null,
+        stopReason: null,
         backfilled: false
       }, data);
       s.dayKey = U.dayKey(s.start, state.meta.dayStartHour);
@@ -428,7 +754,8 @@
         deferCount: 0,
         reason: '',          // 未完成原因
         delta: '',           // 差在哪 / 为什么超时
-        fromDraftId: null
+        fromDraftId: null,
+        insightId: null      // 由观点卡转来的任务，用于行动闭环统计
       }, data);
       if (!t.estMin || t.estMin < 1) t.estMin = 20;
       Store.update(function (st) { st.tasks.push(t); });
@@ -555,9 +882,11 @@
         id: U.uid(),
         at: Date.now(),
         text: '',
+        stance: 'support',
         taskId: null,
         sessionId: null
       }, data);
+      if (ev.stance !== 'counter' && ev.stance !== 'unclear') ev.stance = 'support';
 
       Store.update(function (st) {
         const it = st.insights.find(function (x) { return x.id === insightId; });
@@ -566,9 +895,11 @@
         it.evidences.push(ev);
         it.lastEvidenceAt = ev.at;
 
-        // 状态完全由证据数推导（和 removeEvidence 同一套规则）
+        // 只有支持证据推进状态；反证和“说不清”会保留，但不算支持次数。
         if (it.status === 'dropped') return;
-        const n = it.evidences.length;
+        const n = it.evidences.filter(function (x) {
+          return (x.stance || 'support') === 'support';
+        }).length;
         it.status = n >= 3 ? 'internalized' : n === 2 ? 'verified' : n === 1 ? 'testing' : 'proposed';
       });
       return ev;
@@ -580,9 +911,11 @@
         if (!it || !it.evidences) return;
         it.evidences = it.evidences.filter(function (e) { return e.id !== evidenceId; });
 
-        // 状态完全由证据数推导。只有「已放弃」是终态，不参与回退。
+        // 状态完全由支持证据数推导。只有「已放弃」是终态，不参与回退。
         if (it.status === 'dropped') return;
-        const n = it.evidences.length;
+        const n = it.evidences.filter(function (x) {
+          return (x.stance || 'support') === 'support';
+        }).length;
         it.status = n >= 3 ? 'internalized' : n === 2 ? 'verified' : n === 1 ? 'testing' : 'proposed';
       });
     },
@@ -595,14 +928,64 @@
       }).length;
     },
 
-    // 落地率 = 有证据的观点 / 提出的观点（不含主动放弃）
+    // 参考指标：有支持证据的观点 / 仍在进行的观点。它不是唯一指标。
     landingRate: function () {
       const live = state.insights.filter(function (x) { return x.status !== 'dropped'; });
       if (!live.length) return { rate: null, withEvidence: 0, total: 0 };
       const withEv = live.filter(function (x) {
-        return x.evidences && x.evidences.length > 0;
+        return (x.evidences || []).some(function (ev) {
+          return (ev.stance || 'support') === 'support';
+        });
       }).length;
       return { rate: withEv / live.length, withEvidence: withEv, total: live.length };
+    },
+
+    actionLoop: function () {
+      const live = state.insights.filter(function (x) { return x.status !== 'dropped'; });
+      const support = state.insights.reduce(function (n, it) {
+        return n + (it.evidences || []).filter(function (ev) {
+          return (ev.stance || 'support') === 'support';
+        }).length;
+      }, 0);
+      const counter = state.insights.reduce(function (n, it) {
+        return n + (it.evidences || []).filter(function (ev) {
+          return ev.stance === 'counter';
+        }).length;
+      }, 0);
+      return {
+        withAction: live.filter(function (it) {
+          return it.action && it.action.text;
+        }).length,
+        convertedToTask: live.filter(function (it) {
+          return it.action && it.action.taskId;
+        }).length,
+        completedTasks: state.tasks.filter(function (task) {
+          return task.insightId && task.status === 'done';
+        }).length,
+        support: support,
+        counter: counter,
+        dropped: state.insights.filter(function (it) { return it.status === 'dropped'; }).length
+      };
+    },
+
+    getWeeklyReview: function (weekKey) {
+      return state.weeklyReviews && state.weeklyReviews[weekKey]
+        ? state.weeklyReviews[weekKey]
+        : null;
+    },
+
+    saveWeeklyReview: function (weekKey, focus) {
+      const entry = {
+        focus: String(focus || '').trim(),
+        updatedAt: Date.now()
+      };
+      Store.update(function (st) {
+        if (!st.weeklyReviews || typeof st.weeklyReviews !== 'object') {
+          st.weeklyReviews = {};
+        }
+        st.weeklyReviews[weekKey] = entry;
+      });
+      return entry;
     },
 
     // 30 天无证据 → 标记休眠
@@ -722,6 +1105,7 @@
 
     resetAll: function () {
       try {
+        snapshotKeys().forEach(function (key) { storage.del(key); });
         storage.del(KEY);
         storage.del(BACKUP_KEY);
       } catch (e) { /* 内存模式也允许清空 */ }
