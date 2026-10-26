@@ -7,11 +7,15 @@
 (function (w) {
 
   const KEY = 'lifeos_v1';
+  const BACKUP_KEY = 'lifeos_v1_backup';
+  const CORRUPT_KEY = 'lifeos_v1_corrupt';
   const VERSION = 1;
 
   let state = null;
   let listeners = [];
   let dirty = false;
+  let loadIssue = '';
+  let recoveredFromBackup = false;
 
   /* ---------------- 安全存储 ----------------
      手机浏览器用 file:// 打开时，localStorage 可能被禁用（抛异常）。
@@ -178,11 +182,43 @@
   }
 
   function load() {
+    const primaryRaw = storage.get(KEY);
+
     try {
-      const raw = storage.get(KEY);
-      state = raw ? migrate(JSON.parse(raw)) : defaults();
+      if (primaryRaw) {
+        const parsed = JSON.parse(primaryRaw);
+        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sessions)) {
+          throw new Error('数据格式不完整');
+        }
+        state = migrate(parsed);
+        return state;
+      }
     } catch (e) {
-      console.warn('[store] 读取失败，使用空白数据', e);
+      loadIssue = (e && e.message) || '主数据无法读取';
+      console.warn('[store] 主数据读取失败，尝试恢复快照', e);
+      try { storage.set(CORRUPT_KEY, primaryRaw); } catch (ignore) { /* 空间不足时不影响恢复 */ }
+    }
+
+    try {
+      const backupRaw = storage.get(BACKUP_KEY);
+      if (backupRaw) {
+        const parsed = JSON.parse(backupRaw);
+        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sessions)) {
+          throw new Error('恢复快照格式不完整');
+        }
+        state = migrate(parsed);
+        recoveredFromBackup = true;
+        console.warn('[store] 已从最近一次本机快照恢复');
+        return state;
+      }
+    } catch (e) {
+      loadIssue = loadIssue || (e && e.message) || '恢复快照无法读取';
+      console.warn('[store] 恢复快照读取失败，使用空白数据', e);
+    }
+
+    if (!primaryRaw) {
+      state = defaults();
+    } else {
       state = defaults();
     }
     dirty = false;
@@ -191,15 +227,40 @@
 
   /* ---------------- 写入 ---------------- */
   let saveFailed = false;
-  const persistNow = function () {
+  let saveError = '';
+  let lastSavedAt = null;
+
+  function writeSnapshot(next) {
+    const json = JSON.stringify(next);
+    storage.set(KEY, json);
+
+    // Safari / 隐私模式偶尔会“静默拒绝”写入，读回校验比只看异常可靠。
+    if (storage.get(KEY) !== json) {
+      throw new Error('浏览器没有真正写入数据');
+    }
+
     try {
-      storage.set(KEY, JSON.stringify(state));
+      storage.set(BACKUP_KEY, json);
+    } catch (e) {
+      // 主数据已经写入成功；快照失败不应把这次正常保存误报为失败。
+      console.warn('[store] 恢复快照写入失败', e);
+    }
+  }
+
+  const persistNow = function () {
+    const wasFailed = saveFailed;
+    try {
+      writeSnapshot(state);
       dirty = false;
       saveFailed = false;
+      saveError = '';
+      lastSavedAt = Date.now();
     } catch (e) {
       saveFailed = true;
+      saveError = (e && e.message) || '未知写入错误';
       console.error('[store] 保存失败（可能空间已满）', e);
     }
+    if (wasFailed !== saveFailed) emit();
   };
   const persist = U.debounce(persistNow, 180);
 
@@ -227,7 +288,15 @@
 
     /* 存储健康状态——界面据此决定要不要警告"数据不会保存" */
     storageInfo: function () {
-      return { persistent: storage.ok, reason: storage.why, failed: saveFailed };
+      return {
+        persistent: storage.ok,
+        reason: storage.why,
+        failed: saveFailed,
+        saveError: saveError,
+        lastSavedAt: lastSavedAt,
+        recovered: recoveredFromBackup,
+        loadIssue: loadIssue
+      };
     },
 
     subscribe: function (fn) {
@@ -238,8 +307,11 @@
     /* ---------- 备份 ---------- */
     exportAll: function () {
       const payload = JSON.parse(JSON.stringify(state));
+      // API Key 只属于当前浏览器，不进入可分享的备份文件。
+      if (payload.meta && payload.meta.ai) payload.meta.ai.apiKey = '';
       payload._exportedAt = new Date().toISOString();
       payload._app = 'life-os';
+      payload._secretsExcluded = true;
       U.download('life-os-备份-' + U.dateStr(Date.now()) + '.json',
         JSON.stringify(payload, null, 2), 'application/json');
       Store.update(function (s) { s.meta.lastBackupAt = Date.now(); });
@@ -252,8 +324,12 @@
       }
       const next = migrate(obj);
       next.meta.lastOpenedAt = Date.now();
-      storage.set(KEY, JSON.stringify(next));
+      writeSnapshot(next);
       state = next;
+      dirty = false;
+      saveFailed = false;
+      saveError = '';
+      lastSavedAt = Date.now();
       emit();
       return next;
     },
@@ -645,7 +721,10 @@
     },
 
     resetAll: function () {
-      try { storage.del(KEY); } catch (e) { /* 内存模式也允许清空 */ }
+      try {
+        storage.del(KEY);
+        storage.del(BACKUP_KEY);
+      } catch (e) { /* 内存模式也允许清空 */ }
       state = defaults();
       emit();
     }

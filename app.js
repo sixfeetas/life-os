@@ -133,21 +133,31 @@
     if (!el) return;
     const info = Store.storageInfo();
 
-    if (info.persistent && !info.failed) {
+    if (info.persistent && !info.failed && !info.recovered) {
       el.style.display = 'none';
       return;
     }
 
     el.style.display = '';
-    el.innerHTML =
-      '<b>' + (info.failed ? '保存失败' : '数据不会保存') + '</b>' +
-      (info.failed
-        ? '浏览器拒绝了写入，可能是空间已满或隐私模式。<b>请立刻导出备份。</b>'
+    const title = info.failed
+      ? '保存失败'
+      : info.recovered
+        ? '已恢复本机备份'
+        : '数据不会保存';
+    const detail = info.failed
+      ? '浏览器没有写入成功，可能是空间已满或隐私模式。<b>请立刻导出备份。</b>'
+      : info.recovered
+        ? '主数据读取异常，已自动从最近一次本机快照恢复。<b>请重新导出一份备份。</b>'
         : '当前是用本机文件（file://）打开的，浏览器禁用了本地存储。' +
-          '功能都能用，<b>但关掉页面数据就没了</b>。') +
+          '功能都能用，<b>但关掉页面数据就没了</b>。';
+
+    el.innerHTML =
+      '<b>' + title + '</b>' + detail +
       '<div class="sw-actions">' +
       '<button class="btn btn-sm btn-primary" id="swBackup">导出备份</button>' +
-      '<button class="btn btn-sm btn-quiet" id="swTip">怎么永久保存</button>' +
+      (info.failed || info.recovered
+        ? ''
+        : '<button class="btn btn-sm btn-quiet" id="swTip">怎么永久保存</button>') +
       '</div>';
 
     const bk = document.getElementById('swBackup');
