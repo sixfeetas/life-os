@@ -502,7 +502,7 @@
     return out;
   }
 
-  function mergeObjectField(localState, remoteState, field, localStamps, remoteStamps, tombstones) {
+  function mergeObjectField(localState, remoteState, field, localStamps, remoteStamps, stamps, tombstones) {
     const localObj = localState && localState[field] && typeof localState[field] === 'object'
       ? localState[field]
       : {};
@@ -543,8 +543,8 @@
     const stamps = mergeStampMaps(localStamps, remoteStamps);
     const tombstones = mergeStampMaps(cloudMeta.tombstones, remote._syncTombstones || {});
     const mergedLists = mergeLists(local, remote, localStamps, remoteStamps, stamps, tombstones);
-    const days = mergeObjectField(local, remote, 'days', localStamps, remoteStamps, tombstones);
-    const chats = mergeObjectField(local, remote, 'chats', localStamps, remoteStamps, tombstones);
+    const days = mergeObjectField(local, remote, 'days', localStamps, remoteStamps, stamps, tombstones);
+    const chats = mergeObjectField(local, remote, 'chats', localStamps, remoteStamps, stamps, tombstones);
 
     let running = null;
     if (local.running && remote.running) {
